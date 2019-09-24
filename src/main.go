@@ -210,23 +210,25 @@ func getUptimeIds(c PingdomChecks) []int {
 	return i
 }
 
-// check if a []int contains a value
-func contains(intSlice []int, searchInt int) bool {
-	for _, value := range intSlice {
-		if value == searchInt {
-			return true
+// compare two []int
+func compareSlice(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, v := range a {
+		if v != b[i] {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func checkMaintenanceSchedule(m PingdomMaintenanceSchedule, u []int) (bool, PingdomMaintenanceSchedule) {
 	upToDate := true
-	for _, check := range u {
-		if !contains(m.Maintenance.Checks.Uptime, check) {
-			upToDate = false
-			m.Maintenance.Checks.Uptime = append(m.Maintenance.Checks.Uptime, check)
-		}
+
+	if !compareSlice(m.Maintenance.Checks.Uptime, u) {
+		upToDate = false
+		m.Maintenance.Checks.Uptime = u
 	}
 	return upToDate, m
 }
