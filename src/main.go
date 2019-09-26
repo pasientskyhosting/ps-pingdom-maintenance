@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Env ...
@@ -165,16 +166,20 @@ func intSliceToString(v []int) string {
 
 // Update pingdom maintenance schedule
 func updatePingdomMaintenanceSchedule(e *Env, m PingdomMaintenanceSchedule) {
+	t := time.Now()
+	from := time.Date(t.Year(), t.Month(), t.Day(), 15, 0, 0, 0, time.UTC)
+	to := time.Date(t.Year(), t.Month(), t.Day()+1, 6, 0, 0, 0, time.UTC)
 	schedule := MaintenanceScheduleUpdate{
 		Description:    m.Maintenance.Description,
-		From:           m.Maintenance.From,
-		To:             m.Maintenance.To,
+		From:           int(from.Unix()),
+		To:             int(to.Unix()),
 		Recurrencetype: m.Maintenance.Recurrencetype,
 		Repeatevery:    m.Maintenance.Repeatevery,
 		Effectiveto:    m.Maintenance.Effectiveto,
 		Uptimeids:      intSliceToString(m.Maintenance.Checks.Uptime),
 		Tmsids:         intSliceToString(m.Maintenance.Checks.Tms),
 	}
+	fmt.Println(schedule)
 	url := fmt.Sprintf(`https://api.pingdom.com/api/3.1/maintenance/%d`, e.maintenanceID)
 	var bearer = "Bearer " + e.apiKey
 	// marshal MaintenanceScheduleUpdate to json
