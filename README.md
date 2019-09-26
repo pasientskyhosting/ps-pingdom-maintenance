@@ -10,6 +10,8 @@ Keep pingdom maintenance schedule up to date
 You need these environment variables:
 - `API_KEY` - Pingdom API Key
 - `MAINTENANCE_ID` - Pingdom Maintenance ID to update
+- `POLL_INTERVAL` - How often to check the maintenance schedule (seconds, default 300)
+- `METRICS_PORT` - Prometheus metrics port (default 9600)
 
 
 ### Step 2 - Build docker image and run

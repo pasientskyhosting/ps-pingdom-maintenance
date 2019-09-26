@@ -3,20 +3,29 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Env ...
 type Env struct {
 	apiKey        string
 	maintenanceID int
+	pollInterval  int
+	metricsPort   string
 }
 
 // PingdomMaintenanceSchedules ...
@@ -83,20 +92,45 @@ type PingdomChecks struct {
 	} `json:"counts"`
 }
 
+var (
+	slaTotal = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "ps_pingdom_maintenance_sla_total",
+			Help: "Total uptime SLA checks",
+		})
+	slaMaintenance = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "ps_pingdom_maintenance_sla_maintenance",
+			Help: "The total number of users created",
+		})
+)
+
 // environment variables
 func newEnv(
 	apiKey string,
-	maintenanceID int) *Env {
+	maintenanceID int,
+	pollInterval int,
+	metricsPort string) *Env {
 	if apiKey == "" {
 		log.Fatalf("Could not parse env API_KEY")
 	}
 	if maintenanceID == 0 {
 		log.Fatalf("Could not parse env MAINTENANCE_ID")
 	}
+	if pollInterval == 0 {
+		pollInterval = 300
+	}
+	if metricsPort == "" {
+		metricsPort = "9600"
+	}
 	e := Env{
 		apiKey:        apiKey,
 		maintenanceID: maintenanceID,
+		pollInterval:  pollInterval,
+		metricsPort:   metricsPort,
 	}
+	log.Printf("\tps-pingdom-maintenance service started...")
+	log.Printf("\tMaintenance ID: %d\tPoll Interval: %d\tMetrics port: %s\n\n", e.maintenanceID, e.pollInterval, e.metricsPort)
 	return &e
 }
 
@@ -119,15 +153,17 @@ func getPingdomChecks(e *Env) (PingdomChecks, error) {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatal("Pingdom checks:\n[ERROR] - ", err)
+		return PingdomChecks{}, err
 	}
 	defer resp.Body.Close()
 	body, _ := ioutil.ReadAll(resp.Body)
 	var c = PingdomChecks{}
 	err = json.Unmarshal(body, &c)
 	if err != nil {
-		log.Fatal("Pingdom checks:\n[ERROR] - ", err)
+		slaTotal.Set(0)
+		return PingdomChecks{}, err
 	}
+	slaTotal.Set(float64(len(c.Checks)))
 	return c, nil
 }
 
@@ -140,15 +176,18 @@ func getPingdomMainenanceSchedule(e *Env) (PingdomMaintenanceSchedule, error) {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatal("Pingdom maintenance:\n[ERROR] - ", err)
+		slaMaintenance.Set(0)
+		return PingdomMaintenanceSchedule{}, err
 	}
 	defer resp.Body.Close()
 	body, _ := ioutil.ReadAll(resp.Body)
 	var m = PingdomMaintenanceSchedule{}
 	err = json.Unmarshal(body, &m)
 	if err != nil {
-		log.Fatal("Pingdom maintenance:\n[ERROR] - ", err)
+		slaMaintenance.Set(0)
+		return PingdomMaintenanceSchedule{}, err
 	}
+	slaMaintenance.Set(float64(len(m.Maintenance.Checks.Uptime)))
 	return m, nil
 }
 
@@ -165,7 +204,7 @@ func intSliceToString(v []int) string {
 }
 
 // Update pingdom maintenance schedule
-func updatePingdomMaintenanceSchedule(e *Env, m PingdomMaintenanceSchedule) {
+func updatePingdomMaintenanceSchedule(e *Env, m PingdomMaintenanceSchedule) error {
 	t := time.Now()
 	from := time.Date(t.Year(), t.Month(), t.Day(), 15, 0, 0, 0, time.UTC)
 	to := time.Date(t.Year(), t.Month(), t.Day()+1, 6, 0, 0, 0, time.UTC)
@@ -179,13 +218,12 @@ func updatePingdomMaintenanceSchedule(e *Env, m PingdomMaintenanceSchedule) {
 		Uptimeids:      intSliceToString(m.Maintenance.Checks.Uptime),
 		Tmsids:         intSliceToString(m.Maintenance.Checks.Tms),
 	}
-	fmt.Println(schedule)
 	url := fmt.Sprintf(`https://api.pingdom.com/api/3.1/maintenance/%d`, e.maintenanceID)
 	var bearer = "Bearer " + e.apiKey
 	// marshal MaintenanceScheduleUpdate to json
 	json, err := json.Marshal(schedule)
 	if err != nil {
-		log.Fatal("Pingdom update maintenance schedule:\n[ERROR] - ", err)
+		return err
 	}
 	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(json))
 	req.Header.Add("Authorization", bearer)
@@ -193,17 +231,19 @@ func updatePingdomMaintenanceSchedule(e *Env, m PingdomMaintenanceSchedule) {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatal("Pingdom update maintenance schedule:\n[ERROR] - ", err)
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		log.Fatal("Pingdom update maintenance schedule:\n[ERROR] - ", fmt.Sprintf("Pingdom responded with status code %d", resp.StatusCode))
+		return errors.New("Pingdom responded with status code: " + string(resp.StatusCode))
 	}
 	response, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatal("Pingdom update maintenance schedule:\n[ERROR] - ", err)
+		return err
 	}
-	fmt.Println(string(response))
+	log.Printf("\tPUT: %s", json)
+	log.Printf("\tRESPONSE: %s", response)
+	return nil
 }
 
 // get a list of pingdom check id's
@@ -238,31 +278,63 @@ func checkMaintenanceSchedule(m PingdomMaintenanceSchedule, u []int) (bool, Ping
 	return upToDate, m
 }
 
+func pollAPI(e *Env) {
+	ticker := time.NewTicker(time.Second * time.Duration(e.pollInterval)).C
+	for {
+		select {
+		case <-ticker:
+			// get uptime checks
+			c, err := getPingdomChecks(e)
+			if err != nil {
+				log.Printf("\tPingdom checks:\n[ERROR] - %s", err)
+				continue
+			}
+			// get uptime check id's
+			u := getUptimeIds(c)
+			// get maintenance window
+			m, err := getPingdomMainenanceSchedule(e)
+			if err != nil {
+				log.Printf("\tPingdom maintenance:\n[ERROR] - %s", err)
+				continue
+			}
+			// update maintenance schedule if necessary
+			upToDate, schedule := checkMaintenanceSchedule(m, u)
+			if !upToDate {
+				err := updatePingdomMaintenanceSchedule(e, schedule)
+				if err != nil {
+					log.Printf("\tPingdom update maintenance schedule:\n\t[ERROR] - %s", err)
+					continue
+				}
+			} else {
+				log.Printf("\tMaintenance schedule up to date")
+				// get schedule again to update metric
+				_, _ = getPingdomMainenanceSchedule(e)
+			}
+		}
+	}
+}
+
+func mainloop() {
+	exitSignal := make(chan os.Signal)
+	signal.Notify(exitSignal, syscall.SIGINT, syscall.SIGTERM)
+	<-exitSignal
+	systemTeardown()
+}
+
+func systemTeardown() {
+	log.Printf("Shutting down...")
+}
+
 func main() {
 	e := newEnv(
 		os.Getenv("API_KEY"),
 		getenvInt("MAINTENANCE_ID"),
+		getenvInt("POLL_INTERVAL"),
+		os.Getenv("METRICS_PORT"),
 	)
-
-	// get uptime checks
-	c, err := getPingdomChecks(e)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// get uptime check id's
-	u := getUptimeIds(c)
-
-	// get maintenance window
-	m, err := getPingdomMainenanceSchedule(e)
-	if err != nil {
-		log.Fatal(err)
-	}
-	// update maintenance schedule if necessary
-	upToDate, schedule := checkMaintenanceSchedule(m, u)
-	if !upToDate {
-		updatePingdomMaintenanceSchedule(e, schedule)
-	} else {
-		fmt.Println("Nothing to do... Exiting.")
-	}
+	go pollAPI(e)
+	// prometheus metrics
+	http.Handle("/metrics", promhttp.Handler())
+	http.ListenAndServe(fmt.Sprintf(":%s", e.metricsPort), nil)
+	mainloop()
 }
