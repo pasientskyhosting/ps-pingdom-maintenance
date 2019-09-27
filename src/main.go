@@ -156,6 +156,11 @@ func getPingdomChecks(e *Env) (PingdomChecks, error) {
 		return PingdomChecks{}, err
 	}
 	defer resp.Body.Close()
+	// Success is indicated with 2xx status codes:
+	statusOK := resp.StatusCode >= 200 && resp.StatusCode < 300
+	if !statusOK {
+		return PingdomChecks{}, errors.New("GET Pingdom checks responded with status code: " + strconv.Itoa(resp.StatusCode))
+	}
 	body, _ := ioutil.ReadAll(resp.Body)
 	var c = PingdomChecks{}
 	err = json.Unmarshal(body, &c)
@@ -180,6 +185,11 @@ func getPingdomMainenanceSchedule(e *Env) (PingdomMaintenanceSchedule, error) {
 		return PingdomMaintenanceSchedule{}, err
 	}
 	defer resp.Body.Close()
+	// Success is indicated with 2xx status codes:
+	statusOK := resp.StatusCode >= 200 && resp.StatusCode < 300
+	if !statusOK {
+		return PingdomMaintenanceSchedule{}, errors.New("GET Pingdom maintenance responded with status code: " + strconv.Itoa(resp.StatusCode))
+	}
 	body, _ := ioutil.ReadAll(resp.Body)
 	var m = PingdomMaintenanceSchedule{}
 	err = json.Unmarshal(body, &m)
@@ -234,8 +244,10 @@ func updatePingdomMaintenanceSchedule(e *Env, m PingdomMaintenanceSchedule) erro
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return errors.New("Pingdom responded with status code: " + string(resp.StatusCode))
+	// Success is indicated with 2xx status codes:
+	statusOK := resp.StatusCode >= 200 && resp.StatusCode < 300
+	if !statusOK {
+		return errors.New("UPDATE Pingdom maintenance responded with status code: " + strconv.Itoa(resp.StatusCode))
 	}
 	response, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
@@ -286,24 +298,24 @@ func pollAPI(e *Env) {
 			// get uptime checks
 			c, err := getPingdomChecks(e)
 			if err != nil {
-				log.Printf("\tPingdom checks:\n[ERROR] - %s", err)
-				continue
+				log.Printf("\tPingdom checks: [ERROR] - %s", err)
+				break
 			}
 			// get uptime check id's
 			u := getUptimeIds(c)
 			// get maintenance window
 			m, err := getPingdomMainenanceSchedule(e)
 			if err != nil {
-				log.Printf("\tPingdom maintenance:\n[ERROR] - %s", err)
-				continue
+				log.Printf("\tPingdom maintenance: [ERROR] - %s", err)
+				break
 			}
 			// update maintenance schedule if necessary
 			upToDate, schedule := checkMaintenanceSchedule(m, u)
 			if !upToDate {
 				err := updatePingdomMaintenanceSchedule(e, schedule)
 				if err != nil {
-					log.Printf("\tPingdom update maintenance schedule:\n\t[ERROR] - %s", err)
-					continue
+					log.Printf("\tPingdom update maintenance schedule: [ERROR] - %s", err)
+					break
 				}
 			} else {
 				log.Printf("\tMaintenance schedule up to date")
