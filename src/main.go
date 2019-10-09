@@ -101,7 +101,7 @@ var (
 	slaMaintenance = promauto.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "ps_pingdom_maintenance_sla_maintenance",
-			Help: "The total number of users created",
+			Help: "The number of SLA checks in the maintenance schedule",
 		})
 )
 
